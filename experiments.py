@@ -1,10 +1,39 @@
 # 1. 实验配置和数据生成函数
+import logging
+import os
+import time
+
 from DQN_extract import *
 import matplotlib.patches as mpatches
-from tensorflow.keras.optimizers import Adam
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.patheffects as path_effects
+
+
+def get_logger(log_dir="run_logs", name="demandclean"):
+    """
+    Create a logger that outputs to both console and a log file.
+    """
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+    logger = logging.getLogger(name)
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+    file_handler = logging.FileHandler(os.path.join(log_dir, "training.log"), encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+    return logger
+
+
+LOGGER = get_logger()
 
 def setup_experiment(error_rates, models, task_type, n_samples, n_features,
                      missing_ratio, outlier_ratio, noise_ratio):
@@ -39,14 +68,14 @@ def calculate_feature_importance(df, task_type):
 # 3. 运行单个错误率的实验
 def run_single_error_rate_experiment(error_rate, models, task_type, n_samples, n_features,
                                      missing_ratio, outlier_ratio, noise_ratio, results,
-                                     action_dist, tolerances):
+                                     action_dist, tolerances, agent_type="dqn"):
     """运行单个错误率的实验并更新结果"""
-    print(f"Running experiment with error rate: {error_rate}")
+    LOGGER.info("Running experiment with error rate: %s", error_rate)
 
     # 训练阶段：生成干净数据集和计算特征重要性
     train_clean_df = generate_clean_data(task_type=task_type, n_samples=n_samples, n_features=n_features)
     feature_importance = calculate_feature_importance(train_clean_df, task_type)
-    print(f"Feature importance: {feature_importance}")
+    LOGGER.info("Feature importance: %s", feature_importance)
 
     # 创建训练用错误注入器
     train_injector = ErrorInjector(train_clean_df)
@@ -71,7 +100,7 @@ def run_single_error_rate_experiment(error_rate, models, task_type, n_samples, n
 
     # 对每个模型运行实验
     for model_name in models:
-        print(f"  Testing model: {model_name}")
+        LOGGER.info("  Testing model: %s", model_name)
         # 初始化ML模型
         ml_model = initialize_ml_model(task_type, model_name)
 
@@ -80,7 +109,7 @@ def run_single_error_rate_experiment(error_rate, models, task_type, n_samples, n
                                     task_type=task_type, model_type=model_name)
 
         # 训练RL代理
-        agent,_ = train_rl_agent(train_env, train_injector.error_locations)
+        agent,_ = train_rl_agent(train_env, train_injector.error_locations, agent_type=agent_type)
 
         # 测试阶段：生成新的干净测试数据和注入错误
         test_clean_df, test_df_with_errors, test_injector = generate_test_data(
@@ -126,7 +155,9 @@ def initialize_ml_model(task_type, model_name):
 # 5. RL代理训练函数
 def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="default_agent",
                    reload_model=False, models_dir="saved_models", batch_size=32,
-                   save_interval=None, learning_rate=0.001, exploration_rate=None, verbose=True):
+                   save_interval=None, learning_rate=0.001, exploration_rate=None, verbose=True,
+                   agent_type="dqn", early_stop_patience=15, early_stop_delta=0.01,
+                   use_timestamp=True):
     """
     训练RL代理，支持进度显示、模型保存和加载
 
@@ -142,6 +173,7 @@ def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="defaul
         learning_rate: 学习率，如果加载模型则忽略
         exploration_rate: 探索率，None表示使用DQNAgent默认值
         verbose: 是否显示详细进度
+        agent_type: 选择使用的代理类型（'dqn' 或 'dueling_double'）
 
     返回:
         训练好的RL代理
@@ -151,14 +183,21 @@ def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="defaul
         os.makedirs(models_dir)
 
     # 构建完整的模型路径
-    model_path = os.path.join(models_dir, f"{model_name}.h5")
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    base_name = f"{model_name}_{agent_type}"
+    model_path = os.path.join(models_dir, f"{base_name}.pt")
+    if use_timestamp and not reload_model:
+        model_path = os.path.join(models_dir, f"{base_name}_{timestamp}.pt")
 
     # 计算保存间隔
     if save_interval is None:
         save_interval = max(1, n_episodes // 5)  # 默认在20%、40%、60%、80%和100%保存
 
     # 初始化代理
-    agent = DQNAgent(state_size=5, action_size=3)
+    if agent_type == "dueling_double":
+        agent = DuelingDoubleDQNAgent(state_size=5, action_size=3, learning_rate=learning_rate)
+    else:
+        agent = DQNAgent(state_size=5, action_size=3, learning_rate=learning_rate)
 
     # 如果提供了自定义探索率
     if exploration_rate is not None:
@@ -168,18 +207,17 @@ def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="defaul
     loaded_model = False
     if reload_model and os.path.exists(model_path):
         try:
-            agent.model = tf.keras.models.load_model(model_path, compile=False)
-            agent.model.compile(loss='mse', optimizer=Adam(learning_rate=learning_rate))
+            agent.load(model_path)
             loaded_model = True
             if verbose:
-                print(f"Loaded model from {model_path}")
+                LOGGER.info("Loaded model from %s", model_path)
         except Exception as e:
-            print(f"Error loading model: {e}")
-            print("Training new model instead.")
+            LOGGER.exception("Error loading model from %s: %s. Training new model instead.", model_path, e)
 
     # 如果没有加载模型，显示使用的学习率
     if not loaded_model and verbose:
-        print(f"Training new model with learning rate: {learning_rate}")
+        LOGGER.info("Training new model with learning rate: %s", learning_rate)
+    LOGGER.info("当前训练的RL代理类型: %s", "Dueling Double DQN" if agent_type == "dueling_double" else "DQN")
 
     # 创建训练日志
     training_log = {
@@ -190,29 +228,33 @@ def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="defaul
     }
 
     # 使用tqdm显示训练进度
-    episodes_range = tqdm(range(n_episodes), desc="Training episodes") if verbose else range(n_episodes)
+    episodes_range = tqdm(range(n_episodes), desc="Training episodes", leave=False, dynamic_ncols=True) if verbose else range(n_episodes)
+    best_recent_reward = -np.inf
+    no_improve_steps = 0
 
     for e in episodes_range:
-        state = train_env.reset()
-        steps = 0
-        total_reward = 0
+        try:
+            state = train_env.reset()
+            steps = 0
+            total_reward = 0
 
-        # 内部步骤进度条
-        step_iterator = range(len(error_locations))
-        if verbose and n_episodes <= 10:  # 只有当轮次较少时才显示步骤进度条
-            step_iterator = tqdm(step_iterator, desc=f"Episode {e + 1} steps", leave=False)
+            for _ in range(len(error_locations)):
+                action = agent.act(state)
+                next_state, reward, done, _ = train_env.step(action)
+                agent.remember(state, action, reward, next_state, done)
 
-        for _ in step_iterator:
-            action = agent.act(state)
-            next_state, reward, done, _ = train_env.step(action)
-            agent.remember(state, action, reward, next_state, done)
+                total_reward += reward
+                state = next_state
+                steps += 1
 
-            total_reward += reward
-            state = next_state
-            steps += 1
-
-            if done:
-                break
+                if done:
+                    break
+        except Exception as episode_error:
+            training_log.setdefault("errors", []).append(
+                {"episode": e + 1, "error": str(episode_error)}
+            )
+            LOGGER.exception("Episode %s failed with error", e + 1)
+            raise
 
         # 记录本轮的步数和奖励
         training_log['episode_rewards'].append(total_reward)
@@ -226,19 +268,39 @@ def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="defaul
         if verbose and (e + 1) % max(1, n_episodes // 10) == 0:
             avg_reward = np.mean(training_log['episode_rewards'][-10:])
             avg_steps = np.mean(training_log['episode_steps'][-10:])
-            print(
-                f"Episode {e + 1}/{n_episodes} - Avg Reward: {avg_reward:.2f}, Avg Steps: {avg_steps:.2f}, Epsilon: {agent.epsilon:.4f}")
+            LOGGER.info(
+                "Episode %s/%s - Avg Reward: %.2f, Avg Steps: %.2f, Epsilon: %.4f",
+                e + 1,
+                n_episodes,
+                avg_reward,
+                avg_steps,
+                agent.epsilon,
+            )
+
+        # 简单早停：在近 early_stop_patience 轮平均奖励未提升时提前结束
+        recent_rewards = training_log['episode_rewards'][-early_stop_patience:]
+        if len(recent_rewards) == early_stop_patience:
+            recent_avg = np.mean(recent_rewards)
+            if recent_avg > best_recent_reward + early_stop_delta:
+                best_recent_reward = recent_avg
+                no_improve_steps = 0
+            else:
+                no_improve_steps += 1
+                if no_improve_steps >= early_stop_patience:
+                    if verbose:
+                        LOGGER.info("Early stopping at episode %s: recent avg reward %.3f", e + 1, recent_avg)
+                    break
 
         # 定期保存模型
         if (e + 1) % save_interval == 0 or e == n_episodes - 1:
-            agent.model.save(model_path)
+            agent.save(model_path)
             if verbose:
-                print(f"Model saved to {model_path} after episode {e + 1}/{n_episodes}")
+                LOGGER.info("Model saved to %s after episode %s/%s", model_path, e + 1, n_episodes)
 
     # 完成训练后保存模型
-    agent.model.save(model_path)
+    agent.save(model_path)
     if verbose:
-        print(f"Training completed. Final model saved to {model_path}")
+        LOGGER.info("Training completed. Final model saved to %s", model_path)
 
     return agent, training_log
 
@@ -802,42 +864,42 @@ def plot_performance_comparison(results, tolerances, models, error_rates, task_t
 # 11. 结果分析函数
 def analyze_results(results, action_dist, tolerances, models, error_rates, task_type):
     """分析实验结果并打印关键量化数据"""
-    print("\n===== 关键量化结果 =====")
+    LOGGER.info("\n===== 关键量化结果 =====")
 
     # 1. 低错误率场景下的动作分布
     low_error = min(error_rates)
-    print(f"\n1. 低错误率({low_error:.1f})下的动作分布:")
+    LOGGER.info("\n1. 低错误率(%.1f)下的动作分布:", low_error)
     for model in models:
         no_action = action_dist[model][low_error]['no_action'] * 100
         repair = action_dist[model][low_error]['repair'] * 100
         delete = action_dist[model][low_error]['delete'] * 100
-        print(f"   {model}: 不作为={no_action:.1f}%, 修复={repair:.1f}%, 删除={delete:.1f}%")
+        LOGGER.info("   %s: 不作为=%.1f%%, 修复=%.1f%%, 删除=%.1f%%", model, no_action, repair, delete)
 
     # 2. 高错误率场景下的动作分布
     high_error = max(error_rates)
-    print(f"\n2. 高错误率({high_error:.1f})下的动作分布:")
+    LOGGER.info("\n2. 高错误率(%.1f)下的动作分布:", high_error)
     for model in models:
         no_action = action_dist[model][high_error]['no_action'] * 100
         repair = action_dist[model][high_error]['repair'] * 100
         delete = action_dist[model][high_error]['delete'] * 100
-        print(f"   {model}: 不作为={no_action:.1f}%, 修复={repair:.1f}%, 删除={delete:.1f}%")
+        LOGGER.info("   %s: 不作为=%.1f%%, 修复=%.1f%%, 删除=%.1f%%", model, no_action, repair, delete)
 
     # 3. 模型容忍度比较
-    print("\n3. 不同模型的平均容忍度:")
+    LOGGER.info("\n3. 不同模型的平均容忍度:")
     for model in models:
         avg_tolerance = np.mean(tolerances[model]) * 100
-        print(f"   {model}: 平均容忍度={avg_tolerance:.1f}%")
+        LOGGER.info("   %s: 平均容忍度=%.1f%%", model, avg_tolerance)
 
     # 4. RL策略与全部修复的性能比较
-    print("\n4. RL策略与全部修复的性能比较:")
+    LOGGER.info("\n4. RL策略与全部修复的性能比较:")
     for model in models:
         avg_rl = np.mean([results[model][er]['rl_optimal'] for er in error_rates]) * 100
         avg_repair = np.mean([results[model][er]['repair_all'] for er in error_rates]) * 100
         ratio = avg_rl / avg_repair * 100
-        print(f"   {model}: RL={avg_rl:.1f}%, 全部修复={avg_repair:.1f}%, 比例={ratio:.1f}%")
+        LOGGER.info("   %s: RL=%.1f%%, 全部修复=%.1f%%, 比例=%.1f%%", model, avg_rl, avg_repair, ratio)
 
     # 5. 动作成本效益分析
-    print("\n5. 动作成本效益分析:")
+    LOGGER.info("\n5. 动作成本效益分析:")
     for model in models:
         # 计算平均修复成本节省 (与全部修复相比)
         avg_repair_saved = np.mean([1 - action_dist[model][er]['repair'] for er in error_rates]) * 100
@@ -846,11 +908,11 @@ def analyze_results(results, action_dist, tolerances, models, error_rates, task_
         # 平均性能比例
         avg_perf_ratio = np.mean([results[model][er]['rl_optimal'] / results[model][er]['repair_all']
                                   for er in error_rates]) * 100
-        print(f"   {model}: 减少修复={avg_repair_saved:.1f}%, 减少删除={avg_delete_saved:.1f}%, "
-              f"性能保持={avg_perf_ratio:.1f}%")
+        LOGGER.info("   %s: 减少修复=%.1f%%, 减少删除=%.1f%%, 性能保持=%.1f%%",
+                    model, avg_repair_saved, avg_delete_saved, avg_perf_ratio)
 
     # 6. 错误率阈值分析
-    print("\n6. 错误率阈值分析:")
+    LOGGER.info("\n6. 错误率阈值分析:")
     for model in models:
         # 找到性能下降超过10%的错误率阈值
         baseline_perf = results[model][min(error_rates)]['repair_all']
@@ -861,10 +923,10 @@ def analyze_results(results, action_dist, tolerances, models, error_rates, task_
             if perf_drop > 0.1:  # 性能下降超过10%
                 threshold_er = er
                 break
-        print(f"   {model}: 性能显著下降阈值={threshold_er:.1f}")
+        LOGGER.info("   %s: 性能显著下降阈值=%.1f", model, threshold_er)
 
     # 7. 不同模型对不同错误类型的敏感度分析
-    print("\n7. 模型敏感度分析:")
+    LOGGER.info("\n7. 模型敏感度分析:")
     sensitivity = {}
     for model in models:
         # 错误率增加时，RL修复操作增加的速率
@@ -882,15 +944,15 @@ def analyze_results(results, action_dist, tolerances, models, error_rates, task_
             'perf_sensitivity': perf_sensitivity
         }
 
-        print(f"   {model}: 修复敏感度={repair_sensitivity:.2f}, 性能敏感度={perf_sensitivity:.2f}")
+        LOGGER.info("   %s: 修复敏感度=%.2f, 性能敏感度=%.2f", model, repair_sensitivity, perf_sensitivity)
 
     # 8. 模型容忍度排名
     model_tolerance_avg = {model: np.mean(tolerances[model]) for model in models}
     sorted_models = sorted(model_tolerance_avg.items(), key=lambda x: x[1], reverse=True)
 
-    print("\n8. 模型容忍度排名:")
+    LOGGER.info("\n8. 模型容忍度排名:")
     for rank, (model, tolerance) in enumerate(sorted_models, 1):
-        print(f"   第{rank}名: {model} (容忍度={tolerance:.2f})")
+        LOGGER.info("   第%s名: %s (容忍度=%.2f)", rank, model, tolerance)
 
     return sensitivity
 
@@ -965,7 +1027,8 @@ def run_tolerance_experiment(error_rates=[0.1, 0.2, 0.3, 0.4, 0.5],
                              missing_ratio=0.33,
                              outlier_ratio=0.33,
                              noise_ratio=0.34,
-                             enhanced_visuals=True):
+                             enhanced_visuals=True,
+                             agent_type="dqn"):
     """
     运行多错误率多模型容忍度实验并绘制结果图
     """
@@ -975,18 +1038,18 @@ def run_tolerance_experiment(error_rates=[0.1, 0.2, 0.3, 0.4, 0.5],
         missing_ratio, outlier_ratio, noise_ratio)
 
     # 1. 在实验开始时生成训练和测试的干净数据
-    print("生成干净的训练和测试数据...")
+    LOGGER.info("生成干净的训练和测试数据...")
     train_clean_df = generate_clean_data(task_type=task_type, n_samples=n_samples, n_features=n_features)
     # 计算特征重要性（只需计算一次）
     feature_importance = calculate_feature_importance(train_clean_df, task_type)
-    print(f"特征重要性: {feature_importance}")
+    LOGGER.info("特征重要性: %s", feature_importance)
 
     # 生成额外的测试数据（确保与训练数据不同）
     test_clean_df = generate_clean_data(task_type=task_type, n_samples=n_samples, n_features=n_features)
 
     # 对每个错误率运行实验
     for error_rate in error_rates:
-        print(f"Running experiment with error rate: {error_rate}")
+        LOGGER.info("Running experiment with error rate: %s", error_rate)
 
         # 计算每种错误类型的错误率
         missing_err_rate = error_rate * missing_ratio
@@ -1007,7 +1070,7 @@ def run_tolerance_experiment(error_rates=[0.1, 0.2, 0.3, 0.4, 0.5],
 
         # 对每个模型运行实验
         for model_name in models:
-            print(f"  Testing model: {model_name}")
+            LOGGER.info("  Testing model: %s", model_name)
             # 初始化ML模型
             ml_model = initialize_ml_model(task_type, model_name)
 
@@ -1016,7 +1079,7 @@ def run_tolerance_experiment(error_rates=[0.1, 0.2, 0.3, 0.4, 0.5],
                                         task_type=task_type, model_type=model_name)
 
             # 训练RL代理
-            agent, _ = train_rl_agent(train_env, train_injector.error_locations)
+            agent, _ = train_rl_agent(train_env, train_injector.error_locations, agent_type=agent_type)
 
             # 测试阶段：使用测试数据注入相同程度的错误
             test_injector = ErrorInjector(test_clean_df.copy())
@@ -1052,12 +1115,12 @@ def run_tolerance_experiment(error_rates=[0.1, 0.2, 0.3, 0.4, 0.5],
         results, action_dist, tolerances, models, error_rates, task_type)
 
     # 输出完整的结果数据
-    print("\n===== 完整实验结果 =====")
-    print("\nAction Distribution:")
+    LOGGER.info("\n===== 完整实验结果 =====")
+    LOGGER.info("\nAction Distribution:")
     import json
-    print(json.dumps(action_dist, indent=2, default=str))
-    print("\nPerformance Results:")
-    print(json.dumps(results, indent=2, default=str))
+    LOGGER.info(json.dumps(action_dist, indent=2, default=str))
+    LOGGER.info("\nPerformance Results:")
+    LOGGER.info(json.dumps(results, indent=2, default=str))
 
     # 返回图形和完整结果数据
     results_data = {

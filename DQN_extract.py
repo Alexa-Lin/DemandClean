@@ -7,15 +7,14 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import accuracy_score, mean_squared_error, f1_score, r2_score
 import matplotlib.pyplot as plt
-import gym
+import gymnasium as gym
 from sklearn.svm import SVC, SVR
 from sklearn.linear_model import LogisticRegression, LinearRegression
 import json
-from gym import spaces
-import tensorflow as tf
-from tensorflow.keras import models
-from tensorflow.keras.layers import Dense, Input
-from tensorflow.keras.optimizers import Adam
+from gymnasium import spaces
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from collections import deque
 import random
 from tqdm import tqdm
@@ -576,68 +575,223 @@ class DataCleaningEnv(gym.Env):
 # =============================================================================
 # 4. DQN强化学习代理
 # =============================================================================
+class _QNetwork(nn.Module):
+    def __init__(self, state_size, action_size, hidden_sizes=(24, 24)):
+        super().__init__()
+        layers = []
+        input_dim = state_size
+        for h in hidden_sizes:
+            layers.append(nn.Linear(input_dim, h))
+            layers.append(nn.ReLU())
+            input_dim = h
+        layers.append(nn.Linear(input_dim, action_size))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
 class DQNAgent:
-    def __init__(self, state_size, action_size):
+    def __init__(self, state_size, action_size, learning_rate=1e-3, gamma=0.95, device=None):
         """
-        初始化DQN代理
-        参数:
-          - state_size: 状态向量维度（此处为5）
-          - action_size: 动作数（3个动作：不操作、修复、删除）
+        初始化DQN代理（PyTorch版）
         """
         self.state_size = state_size
         self.action_size = action_size
         self.memory = deque(maxlen=2000)
-        self.gamma = 0.95
+        self.gamma = gamma
         self.epsilon = 1.0
         self.epsilon_min = 0.01
         self.epsilon_decay = 0.995
-        self.learning_rate = 0.001
-        self.model = self._build_model()
-
-    def _build_model(self):
-        """
-        构建神经网络模型用于Q值估计
-        模型结构：输入层 -> 两个隐藏层（各24个神经元, ReLU激活） -> 输出层（3个动作对应Q值）
-        """
-        model = models.Sequential()
-        model.add(Input(shape=(self.state_size,)))
-        model.add(Dense(24, activation='relu'))
-        model.add(Dense(24, activation='relu'))
-        model.add(Dense(self.action_size, activation='linear'))
-        model.compile(loss='mse', optimizer=Adam(learning_rate=self.learning_rate))
-        return model
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = _QNetwork(state_size, action_size).to(self.device)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        self.criterion = nn.MSELoss()
 
     def remember(self, state, action, reward, next_state, done):
-        """
-        存储一次经验：(状态, 动作, 奖励, 下一个状态, 是否结束)
-        """
         self.memory.append((state, action, reward, next_state, done))
 
+    def _to_tensor(self, array):
+        return torch.as_tensor(array, dtype=torch.float32, device=self.device)
+
     def act(self, state):
-        """
-        根据当前状态选择动作（epsilon贪婪策略）
-        """
         if np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
-        act_values = self.model.predict(state.reshape(1, -1), verbose=0)
-        return np.argmax(act_values[0])
+        state_tensor = self._to_tensor(state).unsqueeze(0)
+        self.model.eval()
+        with torch.no_grad():
+            q_values = self.model(state_tensor).cpu().numpy()[0]
+        return int(np.argmax(q_values))
 
     def replay(self, batch_size):
-        """
-        从经验回放池中随机采样小批量样本进行训练更新
-        """
         if len(self.memory) < batch_size:
-            return
+            return None
         minibatch = random.sample(self.memory, batch_size)
-        for state, action, reward, next_state, done in minibatch:
-            target = reward
-            if not done:
-                target = reward + self.gamma * np.amax(self.model.predict(next_state.reshape(1, -1), verbose=0)[0])
-            target_f = self.model.predict(state.reshape(1, -1), verbose=0)
-            target_f[0][action] = target
-            self.model.fit(state.reshape(1, -1), target_f, epochs=1, verbose=0)
+        states = self._to_tensor(np.vstack([m[0] for m in minibatch]))
+        actions = torch.as_tensor([m[1] for m in minibatch], dtype=torch.int64, device=self.device)
+        rewards = self._to_tensor([m[2] for m in minibatch])
+        next_states = self._to_tensor(np.vstack([m[3] for m in minibatch]))
+        dones = self._to_tensor([float(m[4]) for m in minibatch])
+
+        self.model.train()
+        current_q = self.model(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        with torch.no_grad():
+            next_q = self.model(next_states).max(1)[0]
+            target_q = rewards + (1 - dones) * self.gamma * next_q
+
+        loss = self.criterion(current_q, target_q)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
+        return loss.item()
+
+    def predict_values(self, state):
+        """返回给定状态的Q值数组（用于可视化）"""
+        state_tensor = self._to_tensor(state).unsqueeze(0)
+        self.model.eval()
+        with torch.no_grad():
+            q_values = self.model(state_tensor).cpu().numpy()[0]
+        return q_values
+
+    def save(self, path):
+        torch.save({"model_state": self.model.state_dict(), "epsilon": self.epsilon}, path)
+
+    def load(self, path):
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint["model_state"])
+        self.epsilon = checkpoint.get("epsilon", self.epsilon)
+
+
+class _DuelingNetwork(nn.Module):
+    def __init__(self, state_size, action_size, hidden_size=64):
+        super().__init__()
+        self.feature = nn.Sequential(
+            nn.Linear(state_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+        )
+        self.value_stream = nn.Sequential(
+            nn.Linear(hidden_size, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+        )
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(hidden_size, 32),
+            nn.ReLU(),
+            nn.Linear(32, action_size),
+        )
+
+    def forward(self, x):
+        feat = self.feature(x)
+        value = self.value_stream(feat)
+        advantage = self.advantage_stream(feat)
+        advantage_mean = advantage.mean(dim=1, keepdim=True)
+        q_values = value + (advantage - advantage_mean)
+        return q_values
+
+
+class DuelingDoubleDQNAgent:
+    """
+    Dueling + Double DQN 版本（PyTorch）
+    """
+
+    def __init__(self, state_size, action_size, learning_rate=0.001, gamma=0.99, tau=0.1, device=None):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.memory = deque(maxlen=5000)
+        self.gamma = gamma
+        self.epsilon = 1.0
+        self.epsilon_min = 0.05
+        self.epsilon_decay = 0.995
+        self.learning_rate = learning_rate
+        self.tau = tau  # 目标网络软更新系数
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.model = _DuelingNetwork(state_size, action_size).to(self.device)
+        self.target_model = _DuelingNetwork(state_size, action_size).to(self.device)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        self.criterion = nn.MSELoss()
+        self._update_target_network(hard_update=True)
+
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+
+    def _to_tensor(self, array):
+        return torch.as_tensor(array, dtype=torch.float32, device=self.device)
+
+    def act(self, state):
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(self.action_size)
+        state_tensor = self._to_tensor(state).unsqueeze(0)
+        self.model.eval()
+        with torch.no_grad():
+            q_values = self.model(state_tensor).cpu().numpy()[0]
+        return int(np.argmax(q_values))
+
+    def replay(self, batch_size):
+        if len(self.memory) < batch_size:
+            return None
+        minibatch = random.sample(self.memory, batch_size)
+        states = self._to_tensor(np.vstack([m[0] for m in minibatch]))
+        actions = torch.as_tensor([m[1] for m in minibatch], dtype=torch.int64, device=self.device)
+        rewards = self._to_tensor([m[2] for m in minibatch])
+        next_states = self._to_tensor(np.vstack([m[3] for m in minibatch]))
+        dones = self._to_tensor([float(m[4]) for m in minibatch])
+
+        self.model.train()
+        current_q = self.model(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        with torch.no_grad():
+            next_actions = torch.argmax(self.model(next_states), dim=1)
+            target_next_q = self.target_model(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+            target_q = rewards + (1 - dones) * self.gamma * target_next_q
+
+        loss = self.criterion(current_q, target_q)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        self._update_target_network(hard_update=False)
+
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+        return loss.item()
+
+    def _update_target_network(self, hard_update=False):
+        if hard_update:
+            self.target_model.load_state_dict(self.model.state_dict())
+            return
+        for target_param, param in zip(self.target_model.parameters(), self.model.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
+
+    def predict_values(self, state):
+        state_tensor = self._to_tensor(state).unsqueeze(0)
+        self.model.eval()
+        with torch.no_grad():
+            q_values = self.model(state_tensor).cpu().numpy()[0]
+        return q_values
+
+    def save(self, path):
+        torch.save(
+            {
+                "model_state": self.model.state_dict(),
+                "target_state": self.target_model.state_dict(),
+                "epsilon": self.epsilon,
+            },
+            path,
+        )
+
+    def load(self, path):
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint["model_state"])
+        if "target_state" in checkpoint:
+            self.target_model.load_state_dict(checkpoint["target_state"])
+        else:
+            self._update_target_network(hard_update=True)
+        self.epsilon = checkpoint.get("epsilon", self.epsilon)
 
 
 # =============================================================================
@@ -891,7 +1045,7 @@ import os
 def run_experiment(task_type='classification', n_episodes=100,
                    error_rates=[0.05, 0.1, 0.2, 0.3, 0.4],
                    model_type='random_forest', reload_model=False,
-                   model_path="dqn_agent.h5"):
+                   model_path="dqn_agent.pt"):
     results = []
     # 生成干净数据
     clean_df = generate_clean_data(task_type=task_type)
@@ -916,10 +1070,7 @@ def run_experiment(task_type='classification', n_episodes=100,
     agent = DQNAgent(state_size=5, action_size=3)
     # 如果设置了加载本地模型且模型文件存在，则加载
     if reload_model and os.path.exists(model_path):
-        # agent.model = tf.keras.models.load_model(model_path, custom_objects={'mse': tf.keras.losses.MeanSquaredError()})
-        # agent.model = tf.keras.models.load_model(model_path)
-        agent.model = tf.keras.models.load_model(model_path, compile=False)
-        agent.model.compile(loss='mse', optimizer=Adam(learning_rate=0.001))
+        agent.load(model_path)
         print(f"Loaded model from {model_path}.")
     # 下游评估器
     X = clean_df.drop('target', axis=1)
@@ -1023,7 +1174,7 @@ def run_experiment(task_type='classification', n_episodes=100,
         visualize_strategy_comparison(results, task_type=task_type)
 
         # 每训练完当前错误率后保存模型到本地
-        agent.model.save(model_path)
+        agent.save(model_path)
         print(f"Model saved to {model_path} after training at error rate {error_rate}")
 
     return results
@@ -1463,7 +1614,7 @@ def generate_report(thresholds):
 # =============================================================================
 def main():
     np.random.seed(42)
-    tf.random.set_seed(42)
+    torch.manual_seed(42)
     random.seed(42)
 
     task_type = 'classification'  # 'classification' 或 'regression'
