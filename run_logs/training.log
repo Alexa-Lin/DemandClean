@@ -1,0 +1,23 @@
+2025-12-26 17:56:43,652 - INFO - 生成干净的训练和测试数据...
+2025-12-26 17:56:43,779 - INFO - 特征重要性: {'feature_0': 0.23248907965393215, 'feature_1': 0.2061675102456249, 'feature_2': 0.19034867553429974, 'feature_3': 0.1764448117308687, 'feature_4': 0.1945499228352746}
+2025-12-26 17:56:43,780 - INFO - Running experiment with error rate: 0.1
+2025-12-26 17:56:43,886 - INFO -   Testing model: random_forest
+2025-12-26 17:56:44,951 - INFO - Training new model with learning rate: 0.001
+2025-12-26 18:00:03,908 - INFO - Episode 8/80 - Avg Reward: -323.86, Avg Steps: 474.00, Epsilon: 0.9607
+2025-12-26 18:03:14,857 - INFO - Episode 16/80 - Avg Reward: -326.86, Avg Steps: 474.00, Epsilon: 0.9229
+2025-12-26 18:03:14,862 - INFO - Model saved to saved_models\default_agent.pt after episode 16/80
+2025-12-26 18:06:26,031 - INFO - Episode 24/80 - Avg Reward: -344.26, Avg Steps: 474.00, Epsilon: 0.8867
+2025-12-26 18:09:47,352 - INFO - Episode 32/80 - Avg Reward: -312.23, Avg Steps: 474.00, Epsilon: 0.8518
+2025-12-26 18:09:47,353 - INFO - Model saved to saved_models\default_agent.pt after episode 32/80
+2025-12-26 18:13:11,346 - INFO - Episode 40/80 - Avg Reward: -270.42, Avg Steps: 474.00, Epsilon: 0.8183
+2025-12-26 18:16:31,574 - INFO - Episode 48/80 - Avg Reward: -231.18, Avg Steps: 474.00, Epsilon: 0.7862
+2025-12-26 18:16:31,575 - INFO - Model saved to saved_models\default_agent.pt after episode 48/80
+2025-12-26 18:19:52,923 - INFO - Episode 56/80 - Avg Reward: -213.73, Avg Steps: 474.00, Epsilon: 0.7553
+2025-12-26 18:23:07,084 - INFO - Episode 64/80 - Avg Reward: -206.12, Avg Steps: 474.00, Epsilon: 0.7256
+2025-12-26 18:23:07,085 - INFO - Model saved to saved_models\default_agent.pt after episode 64/80
+2025-12-26 18:26:26,210 - INFO - Episode 72/80 - Avg Reward: -180.87, Avg Steps: 474.00, Epsilon: 0.6970
+2025-12-26 18:29:42,038 - INFO - Episode 80/80 - Avg Reward: -161.83, Avg Steps: 474.00, Epsilon: 0.6696
+2025-12-26 18:29:42,039 - INFO - Model saved to saved_models\default_agent.pt after episode 80/80
+2025-12-26 18:29:42,041 - INFO - Training completed. Final model saved to saved_models\default_agent.pt
+2025-12-26 18:30:45,810 - INFO -   Testing model: svm
+2025-12-26 18:30:45,885 - INFO - Training new model with learning rate: 0.001
