@@ -1,4 +1,3 @@
-import os
 import pickle
 
 import seaborn as sns
@@ -8,6 +7,7 @@ import glob
 from PIL import Image
 
 # 导入所有已提供的类和函数
+from tensorflow.keras.optimizers import Adam
 from DQN_extract import *
 
 # [这里导入所有其他必要的类和函数，如ErrorInjector, DataCleaningEnv, DQNAgent等]
@@ -20,26 +20,12 @@ st.set_page_config(
 )
 
 
-def _build_agent(agent_type: str):
-    """根据类型构建对应的代理实例。"""
-    if agent_type == "dueling_double":
-        return DuelingDoubleDQNAgent(state_size=5, action_size=3)
-    return DQNAgent(state_size=5, action_size=3)
-
-
-def _agent_filename(agent_type, model_type, task_type):
-    """统一生成模型文件名，避免不同代理类型覆盖。"""
-    return f"{agent_type}_agent_{task_type}_{model_type}.pt"
-
-
-def _history_filename(model_type, task_type):
-    return f"dqn_history_{task_type}_{model_type}.pkl"
-
-
-def save_model_step2(agent, model_type, task_type, error_rate, agent_type="dqn"):
+def save_model_step2(agent, model_type, task_type, error_rate):
     """保存模型和训练历史"""
-    model_filename = _agent_filename(agent_type, model_type, task_type)
-    agent.save(model_filename)
+    # 保存模型
+    # model_filename = f"dqn_agent_{task_type}_{model_type}_{error_rate:.2f}.h5"
+    model_filename = f"dqn_agent_{task_type}_{model_type}.h5"
+    agent.model.save(model_filename)
 
     # 保存训练历史
     history = {
@@ -48,7 +34,8 @@ def save_model_step2(agent, model_type, task_type, error_rate, agent_type="dqn")
         'reward_history': st.session_state.get('reward_history', [])
     }
 
-    history_filename = _history_filename(model_type, task_type)
+    # history_filename = f"dqn_history_{task_type}_{model_type}_{error_rate:.2f}.pkl"
+    history_filename = f"dqn_history_{task_type}_{model_type}.pkl"
     with open(history_filename, 'wb') as f:
         pickle.dump(history, f)
 
@@ -56,18 +43,21 @@ def save_model_step2(agent, model_type, task_type, error_rate, agent_type="dqn")
 
 
 
-def load_model_step2(model_type, task_type, error_rate, agent_type="dqn"):
+def load_model_step2(model_type, task_type, error_rate):
     """加载模型和训练历史"""
-    model_filename = _agent_filename(agent_type, model_type, task_type)
-    history_filename = _history_filename(model_type, task_type)
-    agent = None
+    # model_filename = f"dqn_agent_{task_type}_{model_type}_{error_rate:.2f}.h5"
+    # history_filename = f"dqn_history_{task_type}_{model_type}_{error_rate:.2f}.pkl"
+    model_filename = f"dqn_agent_{task_type}_{model_type}.h5"
+    history_filename = f"dqn_history_{task_type}_{model_type}.pkl"
+    model = None
     history = None
 
     try:
         # 尝试加载模型
         if os.path.exists(model_filename):
-            agent = _build_agent(agent_type)
-            agent.load(model_filename)
+            # 使用自定义对象作用域加载模型，避免序列化问题
+            with tf.keras.utils.custom_object_scope({'mse': tf.keras.losses.MeanSquaredError()}):
+                model = tf.keras.models.load_model(model_filename)
 
         # 尝试加载历史数据
         if os.path.exists(history_filename):
@@ -76,33 +66,38 @@ def load_model_step2(model_type, task_type, error_rate, agent_type="dqn"):
     except Exception as e:
         st.error(f"Error loading model or history: {e}")
 
-    return agent, history
+    return model, history
 
 
 # 检查模型是否已存在
-def check_model_exists(model_name, task_type, error_rate, agent_type="dqn"):
+def check_model_exists(model_name, task_type, error_rate):
     """检查特定模型、任务类型和错误率的模型文件是否存在"""
-    return os.path.exists(_agent_filename(agent_type, model_name, task_type))
+    # filename = f"dqn_agent_{task_type}_{model_name}_{error_rate:.2f}.h5"
+    filename = f"dqn_agent_{task_type}_{model_name}.h5"
+    return os.path.exists(filename)
 
 
 
 #
 # 保存模型
-def save_model(agent, model_name, task_type, error_rate, agent_type="dqn"):
+def save_model(agent, model_name, task_type, error_rate):
     """保存模型到指定文件名"""
-    filename = _agent_filename(agent_type, model_name, task_type)
-    agent.save(filename)
+    # filename = f"dqn_agent_{task_type}_{model_name}_{error_rate:.2f}.h5"
+    filename = f"dqn_agent_{task_type}_{model_name}.h5"
+    agent.model.save(filename)
     return filename
 
 
 # 加载模型
-def load_model(model_name, task_type, error_rate, agent_type="dqn"):
+def load_model(model_name, task_type, error_rate):
     """加载模型"""
-    filename = _agent_filename(agent_type, model_name, task_type)
+    # filename = f"dqn_agent_{task_type}_{model_name}_{error_rate:.2f}.h5"
+    filename = f"dqn_agent_{task_type}_{model_name}.h5"
     if os.path.exists(filename):
-        agent = _build_agent(agent_type)
-        agent.load(filename)
-        return agent
+        # 使用tf.keras.models.load_model加载模型
+        model = tf.keras.models.load_model(filename, compile=False)
+        model.compile(loss='mse', optimizer=Adam(learning_rate=0.001))
+        return model
     return None
 
 
@@ -334,12 +329,8 @@ elif page == "Step 2: RL Training":
 
         # 保存和加载模型的函数
 
-        # 选择代理类型
-        agent_type = st.radio("选择强化学习代理类型：", ["dqn", "dueling_double"], format_func=lambda x: "DQN" if x=="dqn" else "Dueling Double DQN")
-        st.session_state['agent_type'] = agent_type
-
         # 检查是否已有训练好的模型
-        model_exists = check_model_exists(model_type, task_type, error_rate, agent_type=agent_type)
+        model_exists = check_model_exists(model_type, task_type, error_rate)
 
         if model_exists:
             st.info(
@@ -368,9 +359,11 @@ elif page == "Step 2: RL Training":
                 # 创建或加载代理
                 if use_existing == "Use existing":
                     # 加载已有模型和历史
-                    agent, history = load_model_step2(model_type, task_type, error_rate, agent_type=agent_type)
+                    agent = DQNAgent(state_size=5, action_size=3)
+                    model, history = load_model_step2(model_type, task_type, error_rate)
 
-                    if agent:
+                    if model:
+                        agent.model = model
                         st.success(f"Loaded pre-trained model for {model_type} with error rate {error_rate:.2f}")
 
                         # 创建指标占位符
@@ -500,13 +493,9 @@ elif page == "Step 2: RL Training":
                             st.session_state['q_values_history'] = q_values_history
                             st.session_state['reward_history'] = reward_history
 
-                if agent is None:
-                    st.warning("No pre-trained agent found, training a new one instead.")
-                    use_existing = "Train new"
-
-                if use_existing != "Use existing":  # Train new
+                else:  # Train new
                     # 创建新代理
-                    agent = _build_agent(agent_type)
+                    agent = DQNAgent(state_size=5, action_size=3)
 
                     # 创建训练指标的占位符
                     st.session_state['epsilon_history'] = []
@@ -525,7 +514,7 @@ elif page == "Step 2: RL Training":
 
                         for _ in range(len(injector.error_locations)):
                             action = agent.act(state)
-                            q_values = agent.predict_values(state)
+                            q_values = agent.model.predict(state.reshape(1, -1), verbose=0)[0]
                             episode_q_values.append(np.max(q_values))
 
                             next_state, reward, done, _ = env.step(action)
@@ -584,13 +573,12 @@ elif page == "Step 2: RL Training":
                             plt.close(fig)
 
                     # 保存训练好的模型和历史
-                    model_path = save_model_step2(agent, model_type, task_type, error_rate, agent_type=agent_type)
+                    model_path = save_model_step2(agent, model_type, task_type, error_rate)
                     st.success(f"Model trained and saved to {model_path}")
 
                 # 将训练好的代理和环境存储到session_state
                 st.session_state['env'] = env
                 st.session_state['agent'] = agent
-                st.session_state['agent_type'] = agent_type
                 st.session_state['step2_complete'] = True
 
                 st.success("Training complete! You can now proceed to strategy comparison.")
@@ -1239,7 +1227,6 @@ elif page == "Step 4: Model Comparison":
         st.subheader("Select Models for Comparison")
         task_type = st.session_state.get('task_type', 'classification')
         error_rate = st.session_state['error_rate']
-        agent_type = st.session_state.get('agent_type', 'dqn')
 
         if task_type == 'classification':
             available_models = ["random_forest", "svm", "logistic_regression"]
@@ -1281,7 +1268,7 @@ elif page == "Step 4: Model Comparison":
                         st.text(f"Processing model: {model_type}")
 
                         # 检查是否已有训练好的模型
-                        model_exists = check_model_exists(model_type, task_type, error_rate, agent_type=agent_type)
+                        model_exists = check_model_exists(model_type, task_type, error_rate)
 
                         # 为该模型初始化评估器
                         evaluator = ModelEvaluator(X_train, y_train, X_val, y_val,
@@ -1294,8 +1281,10 @@ elif page == "Step 4: Model Comparison":
 
                             if model_exists and model_type != st.session_state.get('model_type'):
                                 # 如果存在针对当前模型的预训练模型，加载它
-                                current_agent = load_model(model_type, task_type, error_rate, agent_type=agent_type)
-                                if current_agent:
+                                current_agent = DQNAgent(state_size=5, action_size=3)
+                                model = load_model(model_type, task_type, error_rate)
+                                if model:
+                                    current_agent.model = model
                                     agent = current_agent
                         else:
                             # 为该模型类型创建新环境
@@ -1319,7 +1308,7 @@ elif page == "Step 4: Model Comparison":
                                                   task_type=task_type, model_type=model_type)
 
                             # 训练新代理
-                            new_agent = _build_agent(agent_type)
+                            new_agent = DQNAgent(state_size=5, action_size=3)
 
                             # 快速训练（较少轮次）
                             n_quick_episodes = 20
@@ -1338,7 +1327,7 @@ elif page == "Step 4: Model Comparison":
                             agent = new_agent
 
                             # 保存训练好的模型
-                            save_model(agent, model_type, task_type, error_rate, agent_type=agent_type)
+                            save_model(agent, model_type, task_type, error_rate)
 
                         # 用当前模型评估策略
                         strat_perf = evaluate_strategies(task_type, df_with_errors,
