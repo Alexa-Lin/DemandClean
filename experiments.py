@@ -1,6 +1,7 @@
 # 1. 实验配置和数据生成函数
 import logging
 import os
+import sys
 
 from DQN_extract import *
 import matplotlib.patches as mpatches
@@ -221,9 +222,14 @@ def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="defaul
         'loaded_model': loaded_model
     }
 
-    # 使用tqdm显示训练进度
-    episodes_range = tqdm(range(n_episodes), desc="Training episodes", leave=True,
-                          dynamic_ncols=True) if verbose else range(n_episodes)
+    # 在交互式终端显示tqdm进度条，避免在非TTY环境重复生成进度条
+    use_progress_bar = verbose and sys.stdout.isatty()
+    episodes_range = tqdm(
+        range(n_episodes),
+        desc="Training episodes",
+        leave=False,
+        dynamic_ncols=True,
+    ) if use_progress_bar else range(n_episodes)
 
     for e in episodes_range:
         try:
@@ -261,20 +267,29 @@ def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="defaul
         if verbose and (e + 1) % max(1, n_episodes // 10) == 0:
             avg_reward = np.mean(training_log['episode_rewards'][-10:])
             avg_steps = np.mean(training_log['episode_steps'][-10:])
-            LOGGER.info(
-                "Episode %s/%s - Avg Reward: %.2f, Avg Steps: %.2f, Epsilon: %.4f",
-                e + 1,
-                n_episodes,
-                avg_reward,
-                avg_steps,
-                agent.epsilon,
+            progress_message = (
+                "Episode %s/%s - Avg Reward: %.2f, Avg Steps: %.2f, Epsilon: %.4f"
+                % (e + 1, n_episodes, avg_reward, avg_steps, agent.epsilon)
             )
+            if use_progress_bar:
+                episodes_range.set_postfix(
+                    avg_reward=f"{avg_reward:.2f}",
+                    avg_steps=f"{avg_steps:.2f}",
+                    epsilon=f"{agent.epsilon:.4f}",
+                )
+                episodes_range.write(progress_message)
+            else:
+                LOGGER.info(progress_message)
 
         # 定期保存模型
         if (e + 1) % save_interval == 0 or e == n_episodes - 1:
             agent.save(model_path)
             if verbose:
-                LOGGER.info("Model saved to %s after episode %s/%s", model_path, e + 1, n_episodes)
+                save_message = f"Model saved to {model_path} after episode {e + 1}/{n_episodes}"
+                if use_progress_bar:
+                    episodes_range.write(save_message)
+                else:
+                    LOGGER.info(save_message)
 
     # 完成训练后保存模型
     agent.save(model_path)
