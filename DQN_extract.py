@@ -15,6 +15,7 @@ from gymnasium import spaces
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import sys
 
 from collections import deque
 import random
@@ -1061,6 +1062,7 @@ def run_experiment(task_type='classification', n_episodes=100,
                    model_type='random_forest', reload_model=False,
                    model_path="dqn_agent.pt"):
     results = []
+    use_progress_bar = sys.stdout.isatty()
     # 生成干净数据
     clean_df = generate_clean_data(task_type=task_type)
     # visualize_data(clean_df, task_type, 'Clean Data_'+task_type)
@@ -1094,7 +1096,7 @@ def run_experiment(task_type='classification', n_episodes=100,
                                task_type=task_type, model_type=model_type)
 
     # 针对不同错误率进行训练与评估
-    for error_rate in tqdm(error_rates, desc="Testing error rates"):
+    for error_rate in tqdm(error_rates, desc="Testing error rates", disable=not use_progress_bar):
         print(f"\nTesting error rate: {error_rate}")
         # 重置注入器，重新生成新的错误数据
         injector.reset()
@@ -1106,7 +1108,7 @@ def run_experiment(task_type='classification', n_episodes=100,
         env.reset_rate(df_with_errors, injector.error_locations)
 
         # RL训练阶段：在当前错误率下进行 n_episodes 的训练
-        for e in tqdm(range(n_episodes), desc="Training episodes", leave=False):
+        for e in tqdm(range(n_episodes), desc="Training episodes", leave=False, disable=not use_progress_bar):
             state = env.reset()
             for _ in range(len(injector.error_locations)):
                 action = agent.act(state)
