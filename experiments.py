@@ -224,12 +224,16 @@ def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="defaul
 
     # 在交互式终端显示tqdm进度条，避免在非TTY环境重复生成进度条
     use_progress_bar = verbose and sys.stdout.isatty()
+    postfix_data = {}
     episodes_range = tqdm(
         range(n_episodes),
         desc="Training episodes",
         leave=False,
         dynamic_ncols=True,
     ) if use_progress_bar else range(n_episodes)
+
+    if verbose:
+        LOGGER.info("开始训练RL代理（类型：%s），总轮次：%s", "Dueling Double DQN" if agent_type == "dueling_double" else "DQN", n_episodes)
 
     for e in episodes_range:
         try:
@@ -272,12 +276,12 @@ def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="defaul
                 % (e + 1, n_episodes, avg_reward, avg_steps, agent.epsilon)
             )
             if use_progress_bar:
-                episodes_range.set_postfix(
+                postfix_data.update(
                     avg_reward=f"{avg_reward:.2f}",
                     avg_steps=f"{avg_steps:.2f}",
                     epsilon=f"{agent.epsilon:.4f}",
                 )
-                episodes_range.write(progress_message)
+                episodes_range.set_postfix(**postfix_data)
             else:
                 LOGGER.info(progress_message)
 
@@ -287,7 +291,8 @@ def train_rl_agent(train_env, error_locations, n_episodes=80, model_name="defaul
             if verbose:
                 save_message = f"Model saved to {model_path} after episode {e + 1}/{n_episodes}"
                 if use_progress_bar:
-                    episodes_range.write(save_message)
+                    postfix_data["last_save"] = f"ep {e + 1}/{n_episodes}"
+                    episodes_range.set_postfix(**postfix_data)
                 else:
                     LOGGER.info(save_message)
 
